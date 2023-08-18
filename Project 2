@@ -1,0 +1,144 @@
+#include "stm32f10x.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_rcc.h"
+
+#define LED_RCC_PORT RCC_APB2Periph_GPIOA
+#define LED_PORT GPIOA
+#define RED_PIN  GPIO_Pin_10
+#define YELLOW_PIN  GPIO_Pin_9
+#define GREEN_PIN  GPIO_Pin_8
+
+#define BUTTON_PORT GPIOA
+#define BUTTON_PIN GPIO_Pin_11
+#define BUTTON_RCC_PORT RCC_APB2Periph_GPIOA
+
+#define DELAY_TIME 250000
+
+int buttonState = 0;
+int state = 0;
+
+void gpio_Config(void);
+void delay(uint32_t time); //delay function for waiting and checking button state 
+void delayduz(uint32_t timeduz); // delay function for waiting
+
+void gpio_Config(void){
+	//GPIO port structures for leds and buttons
+  GPIO_InitTypeDef RED_LED;
+  GPIO_InitTypeDef YELLOW_RED;
+  GPIO_InitTypeDef GREEN_LED;
+  GPIO_InitTypeDef BUTTON;
+	
+	//Enable clock for PortA
+  RCC_APB2PeriphClockCmd(LED_RCC_PORT, ENABLE);  
+	
+  //Parameters of the port structure
+  RED_LED.GPIO_Pin = RED_PIN;
+  RED_LED.GPIO_Speed = GPIO_Speed_2MHz;
+  RED_LED.GPIO_Mode = GPIO_Mode_Out_PP;
+  GPIO_Init(LED_PORT, &RED_LED);
+	
+  YELLOW_RED.GPIO_Pin = YELLOW_PIN;
+  YELLOW_RED.GPIO_Speed = GPIO_Speed_2MHz;
+  YELLOW_RED.GPIO_Mode = GPIO_Mode_Out_PP;
+  GPIO_Init(LED_PORT, &YELLOW_RED);
+	
+  GREEN_LED.GPIO_Pin = GREEN_PIN;
+  GREEN_LED.GPIO_Speed = GPIO_Speed_2MHz;
+  GREEN_LED.GPIO_Mode = GPIO_Mode_Out_PP;
+  GPIO_Init(LED_PORT, &GREEN_LED);
+	
+  BUTTON.GPIO_Pin = BUTTON_PIN;
+  BUTTON.GPIO_Mode = GPIO_Mode_IPD;
+  GPIO_Init(BUTTON_PORT, &BUTTON);
+}
+
+void delay(uint32_t time){
+	delayduz(100);
+	while(time--){
+		
+		buttonState = GPIO_ReadInputDataBit(BUTTON_PORT,BUTTON_PIN); //On delay time we check the button state also
+			if(buttonState == 1){ 
+				state = 3;  //if button is pressed,it means that button pressed second time, so we pass to third state
+				break;
+				}
+	}
+}
+
+void delayduz(uint32_t timeduz){
+
+	while(timeduz--){
+	}
+}
+
+int main(void){	
+	gpio_Config();
+	while(1){
+		buttonState = GPIO_ReadInputDataBit(BUTTON_PORT,BUTTON_PIN); //read button state if it become 1 break the loop and go to case one
+		if(buttonState == 1){
+			state = 1;
+			break;
+		}
+	}
+	while(1){
+		
+		switch(state){
+		case 1:
+			//Turn on 3 leds
+			GPIO_SetBits(LED_PORT,RED_PIN);
+			GPIO_SetBits(LED_PORT,YELLOW_PIN);
+			GPIO_SetBits(LED_PORT,GREEN_PIN);
+				
+			buttonState = GPIO_ReadInputDataBit(BUTTON_PORT,BUTTON_PIN);//check button state
+
+			if(buttonState == 0){
+				state = 2; //if it is equal to 0 state will be 2 otherwise will not change
+			}
+			break;
+		case 2:
+			//Turn off oll leds firstly and then turn on and turn of in order
+			GPIO_ResetBits(LED_PORT,RED_PIN);
+			GPIO_ResetBits(LED_PORT,YELLOW_PIN);
+			GPIO_ResetBits(LED_PORT,GREEN_PIN);
+			delay(DELAY_TIME);
+		
+			GPIO_SetBits(LED_PORT,RED_PIN);
+			delay(DELAY_TIME);
+
+			GPIO_ResetBits(LED_PORT,RED_PIN);
+			delay(DELAY_TIME);
+
+			GPIO_SetBits(LED_PORT,YELLOW_PIN);
+			delay(DELAY_TIME);
+
+			GPIO_ResetBits(LED_PORT,YELLOW_PIN);
+			delay(DELAY_TIME);
+
+			GPIO_SetBits(LED_PORT,GREEN_PIN);
+			delay(DELAY_TIME);
+			break;
+	case 3:
+		    //Tun on 3 leds and check the button state
+			GPIO_SetBits(LED_PORT,RED_PIN);
+			GPIO_SetBits(LED_PORT,YELLOW_PIN);
+			GPIO_SetBits(LED_PORT,GREEN_PIN);
+			buttonState = GPIO_ReadInputDataBit(BUTTON_PORT,BUTTON_PIN);
+
+			if(buttonState == 0){
+				state = 4; //if buttonState is equal to 0 state will be 4 otherwise will not change
+			}
+			break;
+		case 4:
+			//Turn off all leds and read buttoon state
+			GPIO_ResetBits(LED_PORT,RED_PIN);
+			GPIO_ResetBits(LED_PORT,YELLOW_PIN);
+			GPIO_ResetBits(LED_PORT,GREEN_PIN);
+			buttonState = GPIO_ReadInputDataBit(BUTTON_PORT,BUTTON_PIN);
+
+			if(buttonState == 1){
+				state = 1; //if buttonState is equal to 1 go to case 1
+			}
+			break;
+		}
+	}
+}
+
