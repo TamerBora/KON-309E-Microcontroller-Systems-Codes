@@ -1,0 +1,310 @@
+// REGISTER LEVEL PROGRAMMING (SECTION I)
+
+#include "stm32f10x.h"
+
+#define DELAY_TIME1 650000
+#define DELAY_TIME2 325000
+
+
+void secondBehaviour(void); // function for half period blinking
+void firstBehaviour(void); // function for full period blinking
+void delay(uint32_t time); // delay that controls input in
+void delayduz(uint32_t timeduz); // only delay
+
+uint32_t buttonState1 = 0; // Checking if the 1st button is pressed
+uint32_t buttonState2 = 0;// Checking if the 1st button is pressed
+uint32_t control = 0;// control variable that determines the state according to the last read value of the button
+
+
+
+void firstBehaviour(void){
+	control=0;
+	delayduz(100);
+	while(1){
+	GPIOC->BRR |= (1 << 13); // reset pinC13 -> led on
+	delay(DELAY_TIME1);// 1 second
+	
+	if(control == 1){ 
+		break;
+	}
+	else if(control == 2){
+		break;
+	}
+		
+	GPIOC->BSRR |= (1 << 13);// set pinC13 -> led off
+	delay(DELAY_TIME1);// 1 second
+	
+	if(control == 1){ 
+		break;
+	}
+	else if(control == 2){
+		break;
+	}
+	}
+}
+
+void secondBehaviour(void){
+	control=0;
+	delayduz(100);
+	while(1){
+		
+	GPIOC->BRR |= (1 << 13); // reset pinC13 -> led on
+	delay(DELAY_TIME2);// 0.5 second
+	if(control == 1){ 
+		break;
+	}
+	else if(control == 2){
+		control = 3; 
+		break;
+	}	
+	
+	GPIOC->BSRR |= (1 << 13);// set pinC13 -> led off
+	delay(DELAY_TIME2);// 0.5 second
+	if(control == 1){ 
+		break;
+	}
+	else if(control == 2){
+		control = 3; 
+		break;
+	}	
+	}
+}
+
+void delay(uint32_t time){
+	delayduz(100);
+	while(time--){
+		
+		buttonState1 = GPIOB->IDR & 0x0040;// read pinB6 = 0000 0000 0100 0000
+		buttonState2 = GPIOB->IDR & 0x0200;//read pinB9 = 0000 0010 0000 0000
+		//delayduz(1);
+		if(buttonState1 == 0x0040){
+			control = 1; // buton1 2.kez basildi blinking off;
+			break;
+		}else if(buttonState2 == 0x0200){
+			control = 2; // buton2 basildi blinking period change;
+			break;
+		}
+	}
+}
+
+void delayduz(uint32_t timeduz){
+
+	while(timeduz--){
+	}
+}
+
+int main(void){
+  // Enable clock for PortC and PortB
+	RCC->APB2ENR |= (0x1 << 4);// enable clock for portC
+	RCC->APB2ENR |= (0x1 << 3);// enable clock for portB 
+	
+  // Set the parameters of the port structure as desired:
+  	GPIOC->CRH = 0x44244444; // pinC13 push-pull, output, 2MHz
+	GPIOB->CRL = 0x48444444; // pinB6 Input Pull-Down 
+	GPIOB->CRH = 0x44444484; // pinB9 Input Pull-Down
+
+  while(1)
+  {
+	buttonState1 = GPIOB->IDR & 0x0040;// read pinB6 = 0000 0000 0100 0000
+	buttonState2 = GPIOB->IDR & 0x0200;//read pinB9 = 0000 0010 0000 0000
+		
+	if (buttonState1==0x0040){
+		delayduz(1000);
+		firstBehaviour();
+	}
+	
+	if (control==1){
+		delayduz(1000);
+		GPIOC->BSRR |= (1 << 13);// set pinC13 -> led off
+	
+	}else if(control == 2){
+		delayduz(1000);
+		secondBehaviour();
+	}else if(control == 3){
+		delayduz(1000);
+		firstBehaviour();
+	}
+	else{
+		GPIOC->BSRR |= (1 << 13);// set pinC13 -> led off
+	}
+	}
+  }
+
+// USING PERIPHERAL LIBRARY FUNCTIONS (SECTION 2)
+#include "stm32f10x.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_rcc.h"
+
+//DEFINIG PORTS AND PINS FOR LED
+
+#define LED_PORT GPIOC
+#define LED_PIN  GPIO_Pin_13
+#define LED_RCC_PORT RCC_APB2Periph_GPIOC
+
+// DEFINING PORTS AND PINS FOR THE BUTTONS
+#define BUTTON_PORT GPIOB
+#define BUTTON_PIN1 GPIO_Pin_6
+#define BUTTON_PIN2 GPIO_Pin_9
+#define BUTTON_RCC_PORT RCC_APB2Periph_GPIOB
+
+//DEFINING DELAY TIMES
+#define DELAY_TIME1 650000
+#define DELAY_TIME2 325000
+
+//FUNCTION DECLARATIONS
+void gpio_Config(void);
+void secondBehaviour(void);
+void firstBehaviour(void);
+void delay(uint32_t time);
+void delayduz(uint32_t timeduz);
+
+
+int buttonState1 = 0; //CURRENT STATE OF BUTTON1
+int buttonState2 = 0; //CURRENT STATE OF BUTTON2
+int control = 0; // A GLOBAL VARIABLE USED TO MONITOR STATE SWITCHES
+
+void gpio_Config(void){
+  // Declare the GPIO port structure:
+ 	GPIO_InitTypeDef BUTTON1;
+	GPIO_InitTypeDef BUTTON2;
+	GPIO_InitTypeDef LED;
+	// ENABLING CLOCK FOR PORTS GPIOB and GPIOC
+  RCC_APB2PeriphClockCmd(LED_RCC_PORT, ENABLE);  
+  RCC_APB2PeriphClockCmd(BUTTON_RCC_PORT, ENABLE);  
+	
+  // SETTING PARAMETERS FOR THE PIN,MODE,SPEED of LED:
+  LED.GPIO_Pin = LED_PIN;
+  LED.GPIO_Speed = GPIO_Speed_2MHz;
+  LED.GPIO_Mode = GPIO_Mode_Out_PP;
+  GPIO_Init(LED_PORT, &LED);
+	
+	// SETTING PARAMETERS FOR THE PIN,MODE,SPEED of BUTTONS:
+  BUTTON1.GPIO_Pin = BUTTON_PIN1;
+  BUTTON1.GPIO_Mode = GPIO_Mode_IPD;
+  GPIO_Init(BUTTON_PORT, &BUTTON1);
+	
+	BUTTON2.GPIO_Pin = BUTTON_PIN2;
+	BUTTON2.GPIO_Mode = GPIO_Mode_IPD;
+  GPIO_Init(BUTTON_PORT, &BUTTON2);
+  
+}
+
+void firstBehaviour(void){
+	//FUNCTION TO MAKE LED BLINK WITH 2000 ms PERIOD
+
+	control=0; //DEFAULT CONTROL STATE
+	delayduz(100);  //DELAY USED FOR DEBUGGING PURPOSES
+
+	while(1){
+	GPIO_ResetBits(LED_PORT,LED_PIN); // BUILT-IN LED WORKS IN AN INVERSE FASHION, SO WE RESET TO MAKE IT LIGHT.
+	delay(DELAY_TIME1);// 1 second
+	
+	if(control == 1){  // IF CONTROL == 1 -> BUTTON 1 WAS PRESSED DURING DELAY, WHICH MEANS WE NEED OFF THE LED
+		break;
+	}
+	else if(control == 2){ // IF CONTROL == 2 -> BUTTON 2 WAS PRESSED DURING DELAY, WHICH MEANS WE MUST CHANGE PERIOD
+		break;
+	}
+		
+	GPIO_SetBits(LED_PORT,LED_PIN);
+	delay(DELAY_TIME1);// 1 second
+	
+	if(control == 1){ // IF CONTROL == 1 -> BUTTON 1 WAS PRESSED DURING DELAY, WHICH MEANS WE NEED OFF THE LED
+		break;
+	}
+	else if(control == 2){ // IF CONTROL == 2 -> BUTTON 2 WAS PRESSED DURING DELAY, WHICH MEANS WE MUST CHANGE PERIOD
+		break;
+	}
+	}
+}
+
+void secondBehaviour(void){
+	//FUNCTION TO MAKE LED BLINK WITH 1000 ms PERIOD
+
+
+	control=0; //DEFAULT CONTROL STATE
+	delayduz(100);
+	while(1){
+		
+	GPIO_ResetBits(LED_PORT,LED_PIN); 
+	delay(DELAY_TIME2);// 0.5 second
+	if(control == 1){  // IF CONTROL == 1 -> BUTTON 1 WAS PRESSED DURING DELAY, WHICH MEANS WE NEED OFF THE LED
+		break;
+	}
+	else if(control == 2){ // IF CONTROL == 2 -> BUTTON 2 WAS PRESSED DURING DELAY, WHICH MEANS WE MUST CHANGE PERIOD
+		control = 3; 
+		break;
+	}	
+	
+	GPIO_SetBits(LED_PORT,LED_PIN);
+	delay(DELAY_TIME2);// 0.5 second
+	if(control == 1){ // IF CONTROL == 1 -> BUTTON 1 WAS PRESSED DURING DELAY, WHICH MEANS WE NEED OFF THE LED
+		break;
+	}
+	else if(control == 2){ // IF CONTROL == 2 -> BUTTON 2 WAS PRESSED DURING DELAY, WHICH MEANS WE MUST CHANGE PERIOD
+		control = 3; 
+		break;
+	}	
+	}
+}
+
+void delay(uint32_t time){
+	delayduz(100);
+	while(time--){
+		
+		buttonState1 = GPIO_ReadInputDataBit(BUTTON_PORT,BUTTON_PIN1); // WE READ BUTTONS IN DELAY FUNCTION IN ORDER TO DETECT POSSIBLE INTERRUPTIONS
+		buttonState2 = GPIO_ReadInputDataBit(BUTTON_PORT,BUTTON_PIN2);
+		//delayduz(1);
+		if(buttonState1 == 1){ 
+			control = 1; //BUTTON 1 PRESSED, WE BREAK OUT OF DELAY, AND CHANGE THE CONTROL VARIABLE TO 1 
+			break;
+		}else if(buttonState2 == 1){
+			control = 2; // BUTTON 2 PRESSED, WE BREAK OUT OF DELAY, AND CHANGE THE CONTROL VARIABLE TO 2
+			break;
+		}
+	}
+}
+
+void delayduz(uint32_t timeduz){
+
+	while(timeduz--){
+	}
+}
+
+int main(void){
+  gpio_Config();
+
+  while(1)
+  {
+  //READING BUTTONS	
+	buttonState1 = GPIO_ReadInputDataBit(BUTTON_PORT,BUTTON_PIN1); 
+	buttonState2 = GPIO_ReadInputDataBit(BUTTON_PORT,BUTTON_PIN2);
+	
+	//FIRST BEHAVIOR FUNCTION CALLED WHEN BUTTON1 PRESSED FOR FIRST TIME	
+	if (buttonState1==1){
+		delayduz(1000);
+		firstBehaviour();
+	}
+	//CONTROL VARIABLE CHECKED, WHEN WE BREAK OUT OF FIRST BEHAVIOR DUE TO INTERRUPTION
+
+
+	if (control==1){ // WHEN control== 1 -> WE TURN OFF THE LED
+		delayduz(1000);
+		GPIO_SetBits(LED_PORT,LED_PIN); 
+	
+	}else if(control == 2){ // WHEN control == 2 -> WE SWITCH THE PERIOD TO 1000 ms
+		delayduz(1000);
+		secondBehaviour();
+
+	}else if(control == 3){ // WHEN control == 3 -> WE SWITCH THE PERIOD BACK TO 2000 ms
+		delayduz(1000);
+		firstBehaviour();
+	}
+	else{ // DEFAULT STATE = LED IS OFF
+		GPIO_SetBits(LED_PORT,LED_PIN);
+	}
+	}
+  }
+
+
+
