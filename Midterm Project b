@@ -1,0 +1,293 @@
+#include "stm32f10x.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_rcc.h"
+#include <stm32f10x_tim.h> 
+
+#define LED_RCC_PORT RCC_APB2Periph_GPIOA
+#define LED_PORT GPIOA
+#define RED_PIN GPIO_Pin_0
+
+#define BUTTON_RCC_PORT RCC_APB2Periph_GPIOA
+#define BUTTON_PORT GPIOA
+#define BUTTON_PIN1 GPIO_Pin_3
+
+#define Pot_RCC_Port RCC_APB2Periph_GPIOA
+#define Pot_Port GPIOA
+#define Pot_Pin GPIO_Pin_6
+
+#define LED_OFF 0
+#define LED_ON 1
+#define BLINK 2
+
+GPIO_InitTypeDef GPIO_InitStruct;
+GPIO_InitTypeDef GPIO_InitStruct_Pot;     // adjustment of potentiometer
+EXTI_InitTypeDef EXTI_InitStruct;
+NVIC_InitTypeDef NVIC_InitStruct;
+TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
+TIM_TimeBaseInitTypeDef TIM_Time_Pot;      // to activate TIM3 configuration for potentiometer
+TIM_OCInitTypeDef TIM_OCInitStructure;    //output pin control for pwm 
+ADC_InitTypeDef ADC_InitStruct;           // For ADC configuration
+
+int state = 0; // 0-> LED off, 1-> LED on, 2-> Blinking
+int brightness = 0; //brightness change 0-1000 
+int rising = 0; //when button pressed, rising flag change to 1
+int falling = 1; //when button relased, falling flag change to 1 
+int flashlight_counter = 0; // counter of flashlight 1000ms
+int systick_time_flag = 0; //every 10ms, systicktimeflag increase 
+int i = 0; //used in exti for delay 
+int counter = 0; //counter measures whether the click is short or double 
+
+int short_click = 0; //checks for short click
+int double_click = 0; //checks for double click
+int flashlight_brightness = 0; // keeps the last brightness value for blinking
+int countdown = 200; //countdown timer to measure the time gap between double clicks.
+int short_click_flag = 0; // after the first falling edge, this variable is 1 afterward countdawn variable count 200ms to 0.
+int short_click_counter = 0; // after falling edge time between 0 and 1000 ms, takes values of button's click count 
+double pot = 0; //takes 0-4095 from analog input 
+int tim3_flag = 0; // every 50 ms, flag be 1
+
+void GPIO_Config(void) {// setting for gpio
+    //Enable clock
+    RCC_APB2PeriphClockCmd(LED_RCC_PORT, ENABLE);
+    RCC_APB2PeriphClockCmd(BUTTON_RCC_PORT, ENABLE);
+
+    //Parameters of the port structure
+    GPIO_InitStruct.GPIO_Pin = RED_PIN;
+    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF_PP; //alternative function push pull for led
+    GPIO_Init(LED_PORT, &GPIO_InitStruct);
+
+    GPIO_InitStruct.GPIO_Pin = BUTTON_PIN1;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IPD; //input pull-down mode
+    GPIO_Init(BUTTON_PORT, &GPIO_InitStruct);
+
+    GPIO_InitStruct_Pot.GPIO_Pin = Pot_Pin;
+    GPIO_InitStruct_Pot.GPIO_Mode = GPIO_Mode_AIN; // analog input mode
+    GPIO_Init(Pot_Port, &GPIO_InitStruct_Pot);
+}
+void EXTI_Config(void) {// setting for exti
+
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE); // External clock	
+
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource3);
+    EXTI_InitStruct.EXTI_Line = EXTI_Line3; //button A3
+    EXTI_InitStruct.EXTI_Mode = EXTI_Mode_Interrupt;
+    EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+    EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Rising_Falling; // when pressing button, instantly rising is 1, when release falling edge is 1
+
+    EXTI_Init(&EXTI_InitStruct);
+
+    NVIC_InitStruct.NVIC_IRQChannel = EXTI3_IRQn;
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 0;
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+
+    NVIC_Init(&NVIC_InitStruct);
+}
+
+void EXTI3_IRQHandler(void) {
+
+    if (EXTI_GetFlagStatus(EXTI_Line3) != RESET) {
+
+        if (rising == 0) { //when pressing button, instantly rising is 1
+            rising = 1;
+            falling = 0;
+        } else if (rising == 1) { //when release instantly falling edge is 1
+            falling = 1;
+            rising = 0;
+        }
+
+        for (i = 0; i < 50000; i++) {} // pend -> to don't escape rising and falling edges
+
+        EXTI_ClearITPendingBit(EXTI_Line3);
+    }
+}
+
+void Time_Config(void) {
+    // setting for timer interrupt
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+
+    TIM_TimeBaseStructure.TIM_Period = 999; // TIM2_ARR -> 1000
+    TIM_TimeBaseStructure.TIM_Prescaler = 719; // PWM frequency 100Hz
+    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1; // TIM_CKD_DIV1 = 0
+    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_TimeBaseStructure.TIM_RepetitionCounter = 0;
+
+    TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE);
+    TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
+
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1; // TIM2_CCMR1
+    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable; // TIM2_CCER
+    TIM_OC1Init(TIM2, &TIM_OCInitStructure);
+
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
+
+    TIM_Time_Pot.TIM_Period = 49999; // for 20 Hz -> 50 ms 
+    TIM_Time_Pot.TIM_Prescaler = 71;
+    TIM_Time_Pot.TIM_ClockDivision = TIM_CKD_DIV1;
+    TIM_Time_Pot.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_Time_Pot.TIM_RepetitionCounter = 0;
+
+    TIM_ITConfig(TIM3, TIM_IT_Update, ENABLE);
+    TIM_TimeBaseInit(TIM3, &TIM_Time_Pot);
+
+    NVIC_InitStruct.NVIC_IRQChannel = TIM3_IRQn;
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 1;
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+
+    NVIC_Init(&NVIC_InitStruct);
+
+    TIM_Cmd(TIM2, ENABLE);
+    TIM_Cmd(TIM3, ENABLE);
+}
+
+void TIM3_IRQHandler(void) {
+
+    if (TIM_GetITStatus(TIM3, TIM_IT_Update) == SET) {
+        tim3_flag = 1;
+
+        TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
+    }
+}
+
+void pwm_flashlight(int flashlight_brightness) {
+
+    if (flashlight_counter < 500) { //flash take on for 0 - 500ms 
+        TIM_OCInitStructure.TIM_Pulse = flashlight_brightness; // flashlight value goes to TIM2_CCR1 -> duty cyc = TIM2_CCR1 / TIM2_ARR
+
+    } else if (flashlight_counter < 1000) {
+        TIM_OCInitStructure.TIM_Pulse = 0; //flash take off for 500ms - 1000ms
+    } else {
+        flashlight_counter = 0;
+    }
+    TIM_OC1Init(TIM2, &TIM_OCInitStructure);
+    flashlight_counter = flashlight_counter + 10;
+}
+
+void SysTick_Handler(void) { //every 10 ms sysTick counter increase 
+    systick_time_flag = 1;
+
+    if (rising == 1) { //measures the time between push and release button
+        counter = counter + 10; // therefore, in the 10 ms counter increases 10  --> 1 second => counter = counter++
+    } else if (falling == 1) { // according to time, next step actualize
+        if ((counter > 0) && (counter < 1000)) { //shorter than 1 second action -> short press or double click
+            short_click_flag = 1;
+            short_click_counter = short_click_counter + 1; // it passes through the falling edge and determines how many times a button is pressed
+            counter = 0; // counter reseted for selecting short press or double click 
+        } else if ((counter > 200) && (counter < 1000)) { //when no act between 200ms and 1000ms short click
+            short_click = 1;
+        }
+        if (short_click_flag == 1) {
+            countdown = countdown - 10; // 200ms countdown   
+            if (countdown < 0) {
+                if (short_click_counter % 2 == 0) { // ==> double click = blinking
+                    double_click = 1;
+                    short_click = 0;
+                    short_click_counter = 0;
+                } else if (short_click_counter % 2 == 1) { // ==> single click = take on take off LED
+                    double_click = 0;
+                    short_click = 1;
+                    short_click_counter = 0;
+                }
+                short_click_flag = 0;
+                countdown = 200; //countdown reseted 
+            }
+        }
+        counter = 0;
+    }
+}
+void ADC_Config(void) {
+    RCC_ADCCLKConfig(RCC_PCLK2_Div6); // ADC clock 72/6 = 12 MHz
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1 | RCC_APB2Periph_AFIO, ENABLE); // Enable clocks for ADC1 and AFIO
+    
+    ADC_DeInit(ADC1);
+    ADC_InitStruct.ADC_Mode = ADC_Mode_Independent;
+    ADC_InitStruct.ADC_ExternalTrigConv = ADC_ExternalTrigConv_None;
+    ADC_InitStruct.ADC_DataAlign = ADC_DataAlign_Right;
+    ADC_InitStruct.ADC_NbrOfChannel = 1;
+    ADC_InitStruct.ADC_ScanConvMode = DISABLE; // Convert one channel at a time
+    ADC_InitStruct.ADC_ContinuousConvMode = DISABLE; // Prevent instantaneous brightness change
+    
+    ADC_Init(ADC1, &ADC_InitStruct);
+    ADC_RegularChannelConfig(ADC1, ADC_Channel_6, 1, ADC_SampleTime_41Cycles5); // Channel 6 -> A6
+    ADC_Cmd(ADC1, ENABLE); // Enable ADC1
+    
+    ADC_ResetCalibration(ADC1); // Calibration is set
+    while (ADC_GetResetCalibrationStatus(ADC1));
+    ADC_StartCalibration(ADC1);
+    while (ADC_GetCalibrationStatus(ADC1));
+    ADC_SoftwareStartConvCmd(ADC1, ENABLE); // Start conversion
+}
+
+int main(void) {
+    GPIO_Config();
+    EXTI_Config();
+    Time_Config();
+    ADC_Config();
+    
+    SysTick_Config(SystemCoreClock / 100); // 10 ms (100Hz)
+    
+    while (1) {
+        if (tim3_flag == 1) {
+            tim3_flag = 0;
+            ADC_SoftwareStartConvCmd(ADC1, ENABLE);
+            
+            while (ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC) == RESET);
+            pot = ADC_GetConversionValue(ADC1); // Read pot value
+        }
+        
+        brightness = (pot / 4095) * 1000; // Map to 1000 steps (PWM resolution)
+        
+        if (brightness < 5) { // Prevent luminance leakage at smallest potentiometer value
+            brightness = 0;
+        }
+        
+        switch (state) {
+            case LED_OFF:
+                brightness = 0;
+                TIM_OCInitStructure.TIM_Pulse = brightness;
+                TIM_OC1Init(TIM2, &TIM_OCInitStructure);
+                
+                if (short_click == 1) {
+                    brightness = flashlight_brightness;
+                    short_click = 0;
+                    state = 1;
+                }
+                break;
+            
+            case LED_ON:
+                TIM_OCInitStructure.TIM_Pulse = brightness;
+                TIM_OC1Init(TIM2, &TIM_OCInitStructure);
+                
+                if (double_click == 1) {
+                    flashlight_brightness = brightness;
+                    double_click = 0;
+                    short_click = 0;
+                    flashlight_counter = 0;
+                    state = 2;
+                }
+                else if (short_click == 1) {
+                    short_click = 0;
+                    state = 0;
+                }
+                break;
+            
+            case BLINK:
+                if (systick_time_flag == 1) {
+                    systick_time_flag = 0;
+                    pwm_flashlight(flashlight_brightness);
+                }
+                else if (double_click == 1) {
+                    short_click = 0;
+                    double_click = 0;
+                    state = 1;
+                }
+                else if (short_click == 1) {
+                    short_click = 0;
+                    state = 0;
+                }
+                break;
+        }
+    }
+}
