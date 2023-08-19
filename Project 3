@@ -1,0 +1,136 @@
+#include "stm32f10x.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_rcc.h"
+
+#define LED_RCC_PORT RCC_APB2Periph_GPIOB
+#define LED_PORT GPIOB
+#define RED_PIN GPIO_Pin_8
+#define YELLOW_PIN GPIO_Pin_7
+#define GREEN_PIN GPIO_Pin_6
+#define BUTTON_PORT GPIOA
+#define BUTTON_PIN GPIO_Pin_0
+#define BUTTON_RCC_PORT RCC_APB2Periph_GPIOA
+
+GPIO_InitTypeDef GPIO_InitStruct;
+EXTI_InitTypeDef EXTI_InitStruct;
+NVIC_InitTypeDef NVIC_InitStruct;
+TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
+
+int buttonState = 0; // Checks if the button is pressed
+int state = 0; // It records which state it is in
+int timer_counter = 0; // Counting seconds inside the timer interrupt (unit -> second)
+
+void GPIO_Config(void) {
+    // Setting for GPIO
+    // Enable clock
+    RCC_APB2PeriphClockCmd(BUTTON_RCC_PORT | LED_RCC_PORT, ENABLE);
+
+    // Parameters of the port structure
+    GPIO_InitStruct.GPIO_Pin = RED_PIN | YELLOW_PIN | GREEN_PIN;
+    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_2MHz;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_Out_PP;
+    GPIO_Init(LED_PORT, &GPIO_InitStruct);
+
+    GPIO_InitStruct.GPIO_Pin = BUTTON_PIN;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IPD;
+    GPIO_Init(BUTTON_PORT, &GPIO_InitStruct);
+}
+
+void EXTI_Config(void) {
+    // Setting for EXTI
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource0);
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE); // External clock
+
+    EXTI_InitStruct.EXTI_Line = EXTI_Line0;
+    EXTI_InitStruct.EXTI_Mode = EXTI_Mode_Interrupt;
+    EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+    EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Rising;
+    EXTI_Init(&EXTI_InitStruct);
+
+    NVIC_InitStruct.NVIC_IRQChannel = EXTI0_IRQn;
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 0;
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+    NVIC_Init(&NVIC_InitStruct);
+}
+
+void EXTI0_IRQHandler() { // button reading with interrupt
+    if (EXTI_GetFlagStatus(EXTI_Line0) != RESET) {
+        if (state == 3) {
+            state = 4;
+            buttonState = 1;
+            timer_counter = 0;
+        }
+        EXTI_ClearITPendingBit(EXTI_Line0);
+    }
+}
+
+void Time_Config(void) {
+    // Setting for timer interrupt
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+    TIM_TimeBaseStructure.TIM_Period = 49999;
+    TIM_TimeBaseStructure.TIM_Prescaler = 1439;
+    TIM_TimeBaseStructure.TIM_ClockDivision = 0;
+    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
+    TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE);
+    TIM_Cmd(TIM2, ENABLE);
+
+    // Priority configuration
+    NVIC_InitStruct.NVIC_IRQChannel = TIM2_IRQn;
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 1;
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_Init(&NVIC_InitStruct);
+}
+
+void TIM2_IRQHandler(void) { // time counter increments by 1 every 1 second
+    if (TIM_GetITStatus(TIM2, TIM_IT_Update) == SET) {
+        timer_counter++;
+        TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
+    }
+}
+
+int main(void) {
+    GPIO_Config();
+    EXTI_Config();
+    Time_Config();
+    state = 1;
+
+    while (1) {
+        switch (state) {
+            case 1:
+                GPIO_SetBits(LED_PORT, RED_PIN); // Red LED is on for 5 seconds
+                if (timer_counter == 5) { // Counting the counter in the time interrupt for 5 seconds
+                    state = 2;
+                    timer_counter = 0;
+                }
+                GPIO_ResetBits(LED_PORT, RED_PIN);
+                break;
+            case 2:
+                GPIO_SetBits(LED_PORT, YELLOW_PIN); // Yellow LED is on for 2 seconds
+                if (timer_counter == 2) { // Counting the counter in the time interrupt for 2 seconds
+                    state = 3;
+                    timer_counter = 0;
+                }
+                GPIO_ResetBits(LED_PORT, YELLOW_PIN);
+                break;
+            case 3:
+                GPIO_SetBits(LED_PORT, GREEN_PIN); // Green LED is on for 5 seconds
+                if (timer_counter == 5) { // Counting the counter in the time interrupt for 5 seconds
+                    state = 4;
+                    timer_counter = 0;
+                }
+                GPIO_ResetBits(LED_PORT, GREEN_PIN);
+                break;
+            case 4:
+                GPIO_SetBits(LED_PORT, YELLOW_PIN); // Yellow LED is on for 2 seconds
+                if (timer_counter == 2) { // Counting the counter in the time interrupt for 2 seconds
+                    state = 1;
+                    timer_counter = 0;
+                }
+                GPIO_ResetBits(LED_PORT, YELLOW_PIN);
+                break;
+        }
+    }
+}
