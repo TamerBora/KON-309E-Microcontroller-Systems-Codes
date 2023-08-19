@@ -1,0 +1,330 @@
+#include "stm32f10x.h"
+#include "stm32f10x_rcc.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include <stdio.h>
+
+#define LED_PORT GPIOA
+#define RED_PIN GPIO_Pin_0
+#define YELLOW_PIN GPIO_Pin_1
+#define GREEN_PIN GPIO_Pin_2
+#define BUTTON_PORT GPIOA
+#define BUTTON_PIN1 GPIO_Pin_3
+#define BUTTON_PIN2 GPIO_Pin_4
+
+GPIO_InitTypeDef GPIO_InitStruct;
+GPIO_InitTypeDef GPIO_InitStruct_Pot;
+EXTI_InitTypeDef EXTI_InitStruct;
+NVIC_InitTypeDef NVIC_InitStruct;
+TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
+TIM_OCInitTypeDef TIM_OCInitStructure;
+ADC_InitTypeDef ADC_InitStruct;
+USART_InitTypeDef USART_InitStructure;
+I2C_InitTypeDef I2C_InitStructure;
+
+int time_counter = 0;
+int time_500ms_counter = 0;
+char buffer[60];
+uint16_t dataBuffer[2];
+int i = 0;
+int button_state1 = 0;
+int button_state2 = 0;
+int Temperature_read;
+int temperature_value;
+double current_temp;
+double desired_temp = 22;
+double gain_controller = 0;
+double error = 0;
+double pwm_value = 0;
+double pwm_value_neg = 0;
+double heater_instentity = 0;
+double cooler_instentity = 0;
+double duty_ratio = 0;
+
+void GPIO_Config(void);
+void EXTI_Config(void);
+void Time_Config(void);
+void Usart_config(void);
+void pwm_red(uint16_t time_pulse);
+void pwm_yellow(uint16_t time_pulse);
+void pwm_green(uint16_t time_pulse);
+void UART_Data(char* string);
+void I2C_Config(void);
+
+int main() {
+    GPIO_Config();
+    EXTI_Config();
+    Time_Config();
+    Usart_config();
+    I2C_Config();
+
+    SysTick_Config(SystemCoreClock / 100); // 10 ms (100Hz)
+    
+ while (1) {
+    while (I2C_GetFlagStatus(I2C2, I2C_FLAG_BUSY)); // Wait if busy
+    I2C_GenerateSTART(I2C2, ENABLE); // Generate START condition
+    while (!I2C_GetFlagStatus(I2C2, I2C_FLAG_SB)); // Start bit
+    
+    // Send device address for read
+    I2C_Send7bitAddress(I2C2, 0x90, I2C_Direction_Receiver); // Address of slave
+    while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED));
+    
+    // Read the first data
+    while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_BYTE_RECEIVED));
+    dataBuffer[0] = I2C_ReceiveData(I2C2);
+    
+    // Disable ACK and generate stop condition
+    I2C_AcknowledgeConfig(I2C2, DISABLE);
+    I2C_GenerateSTOP(I2C2, ENABLE);
+    
+    // Read the second data
+    while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_BYTE_RECEIVED));
+    dataBuffer[1] = I2C_ReceiveData(I2C2);
+    
+    Temperature_read = ((short)(dataBuffer[0] << 8 | dataBuffer[1])); // Compute 9-bit temperature output value
+    temperature_value = Temperature_read >> 5; // We slide to the right 5 bits
+    current_temp = temperature_value * (0.125); // Multiplied to adjust magnitude according to least significant bit
+    error = desired_temp - current_temp; // Error calculation
+    gain_controller = 5 * (error / 0.125); // Designed for 5 pwm increase
+    pwm_value = gain_controller; // Gain assigned to pwm
+    pwm_value_neg = (-1) * pwm_value; // For green led pwm
+    
+    // This part is written for serial plot. Serial plot shows us heater intensity and cooler intensity
+    if (pwm_value > 0) {
+        heater_instentity = pwm_value;
+        cooler_instentity = 0;
+    }
+    if (pwm_value_neg > 0) {
+        heater_instentity = 0;
+        cooler_instentity = pwm_value_neg;
+    }
+    if (heater_instentity > 100) {
+        heater_instentity = 100;
+        cooler_instentity = 0;
+    }
+    if (cooler_instentity > 100) {
+        heater_instentity = 0;
+        cooler_instentity = 100;
+    }
+    
+    // Red -> heater
+    // Green -> cooler
+    // Yellow -> saturation
+    if (error > 0) { // if error > 0 ((desired - current) temperature > 0 ) red led on and takes pwm_value
+        duty_ratio = pwm_value;
+        pwm_red(pwm_value);
+        pwm_green(0);
+        pwm_yellow(0);
+        
+        if (pwm_value > 100 || gain_controller < -100) { // Saturation mode on, yellow led on
+            duty_ratio = 100;
+            pwm_yellow(100);
+        }
+    }
+    else if (error < 0) { // if error < 0 ((desired - current) temperature > 0 ) green led on and takes pwm_value
+        pwm_value_neg = (-1) * pwm_value;
+        duty_ratio = pwm_value_neg;
+        pwm_green(pwm_value_neg);
+        pwm_red(0);
+        pwm_yellow(0);
+        
+        if (pwm_value_neg > 100 || gain_controller < -100) { // Saturation mode on, yellow led on
+            duty_ratio = 100;
+            pwm_yellow(100);
+        }
+    }
+    else if (error == 0 && (pwm_value < 100 && pwm_value >(-100))) { // All LEDs off
+        duty_ratio = 0;
+        pwm_green(0);
+        pwm_red(0);
+        pwm_yellow(0);
+    }
+    
+    if (time_500ms_counter == 1) {
+        time_500ms_counter = 0;
+        
+        if (error < 0) {
+            sprintf(buffer, "Cooling, Duty Ratio: %f, Current Temperature: %f\r\n", duty_ratio, current_temp);
+        }
+        if (error > 0) {
+            sprintf(buffer, "Heating, Duty Ratio: %f, Current Temperature: %f\r\n", duty_ratio, current_temp);
+        }
+        if (error == 0) {
+            sprintf(buffer, "Desired, Duty Ratio: %f, Current Temperature: %f\r\n", duty_ratio, current_temp);
+        }
+        //sprintf(buffer, " %f, %f, %f\r\n", current_temp, heater_instentity, cooler_instentity );
+        UART_Data(buffer);
+    }
+    
+    if (button_state1 == 1 || button_state2 == 1) {
+        for (i = 0; i < 200000; i++);
+        
+        if (button_state1 == 1) {
+            desired_temp += 0.5; // When released button1 desired temperature 0.5 increase
+        }
+        if (button_state2 == 1) {
+            desired_temp -= 0.5; // When released button2 desired temperature 0.5 decrease
+        }
+        
+        sprintf(buffer, "The new setpoint: %f\r\n", desired_temp);
+        UART_Data(buffer);
+        button_state1 = 0; // Reset flag
+        button_state2 = 0; // Reset flag
+    }
+}
+void UART_Data(char* string) // To send data from UART to PC
+{
+    while (*string)
+    {
+        while (!(USART1->SR & 0x00000040)); // 0x00000040 has transfer completed flag if this flag occurs all 8 bits are sent.
+        USART_SendData(USART1, *string);
+        string++;
+    }
+}
+
+void SysTick_Handler(void) { //every 10 ms sysTick counter increase
+    time_counter = time_counter + 1;
+    
+    if (time_counter == 50) {
+        time_counter = 0;
+        time_500ms_counter = time_500ms_counter + 1;
+    }
+}
+
+void GPIO_Config(void) {
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO, ENABLE);
+    
+    // Parameters of the port structure
+    GPIO_InitStruct.GPIO_Pin = RED_PIN | YELLOW_PIN | GREEN_PIN;
+    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF_PP; // adjust alternative function output for pwm signal
+    GPIO_Init(LED_PORT, &GPIO_InitStruct);
+    
+    GPIO_InitStruct.GPIO_Pin = BUTTON_PIN1 | BUTTON_PIN2;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IPD; // input pull-down mode
+    GPIO_Init(BUTTON_PORT, &GPIO_InitStruct);
+    
+    GPIO_InitStruct.GPIO_Pin = GPIO_Pin_10;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IN_FLOATING; // RX
+    GPIO_Init(GPIOA, &GPIO_InitStruct);
+    
+    GPIO_InitStruct.GPIO_Pin = GPIO_Pin_9;
+    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz; // TX
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF_PP;
+    GPIO_Init(GPIOA, &GPIO_InitStruct);
+    
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
+    
+    // Configure pins SDA and SCL
+    GPIO_InitStruct.GPIO_Pin = GPIO_Pin_10 | GPIO_Pin_11;
+    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF_OD;
+    GPIO_Init(GPIOB, &GPIO_InitStruct);
+}
+
+void EXTI_Config(void) { // setting for exti
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE); // External clock
+    
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource3); // button A3
+    EXTI_InitStruct.EXTI_Line = EXTI_Line3;
+    EXTI_InitStruct.EXTI_Mode = EXTI_Mode_Interrupt;
+    EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+    EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Falling; // when pressing button, instantly rising is 1, when release falling edge is 1
+    EXTI_Init(&EXTI_InitStruct);
+    
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource4); // config for A4 pin
+    EXTI_InitStruct.EXTI_Line = EXTI_Line4;
+    EXTI_InitStruct.EXTI_Mode = EXTI_Mode_Interrupt;
+    EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+    EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Falling; // Activates when the button is pressed
+    EXTI_Init(&EXTI_InitStruct);
+    
+    NVIC_InitStruct.NVIC_IRQChannel = EXTI3_IRQn; // priority for EXTI3_IRQHandler
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 0;
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+    NVIC_Init(&NVIC_InitStruct);
+    
+    NVIC_InitStruct.NVIC_IRQChannel = EXTI4_IRQn; // priority for EXTI4_IRQHandler
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 1;
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+    NVIC_Init(&NVIC_InitStruct);
+}
+void EXTI3_IRQHandler(void) {
+    if (EXTI_GetFlagStatus(EXTI_Line3) != RESET) {
+        button_state1 = 1;
+        EXTI_ClearITPendingBit(EXTI_Line3);
+    }
+}
+
+void EXTI4_IRQHandler(void) {
+    if (EXTI_GetFlagStatus(EXTI_Line4) != RESET) { // enter when button2 is pressed
+        button_state2 = 1;
+        EXTI_ClearITPendingBit(EXTI_Line4); // exit from interrupt
+    }
+}
+
+void Time_Config(void) {
+    // Setting for timer interrupt
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+    TIM_TimeBaseStructure.TIM_Period = 99; // TIM2_ARR -> 100
+    TIM_TimeBaseStructure.TIM_Prescaler = 719; // PWM frequency 1000Hz
+    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1; // TIM_CKD_DIV1 = 0
+    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_TimeBaseStructure.TIM_RepetitionCounter = 0;
+    TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
+    TIM_Cmd(TIM2, ENABLE); // enable timer 2
+}
+
+void pwm_red(uint16_t time_pulse) {
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1; // TIM2_CCMR1
+    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable; // TIM2_CCER
+    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High; // TIM2_CCER
+    TIM_OCInitStructure.TIM_Pulse = time_pulse; // TIM2_CCR1 -> duty cyc = TIM2_CCR1 / TIM2_ARR
+    TIM_OC1Init(TIM2, &TIM_OCInitStructure); // PWM OC1 -> TIM2 A0
+}
+
+void pwm_yellow(uint16_t time_pulse) {
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1; // TIM2_CCMR1
+    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable; // TIM2_CCER
+    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High; // TIM2_CCER
+    TIM_OCInitStructure.TIM_Pulse = time_pulse; // TIM2_CCR1 -> duty cyc = TIM2_CCR1 / TIM2_ARR
+    TIM_OC2Init(TIM2, &TIM_OCInitStructure); // PWM OC2 -> TIM2 A1
+}
+
+void pwm_green(uint16_t time_pulse) {
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1; // TIM2_CCMR1 -> mode pwm1 (the output signal is inverted if in mode pwm2)
+    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable; // TIM2_CCER
+    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High; // TIM2_CCER
+    TIM_OCInitStructure.TIM_Pulse = time_pulse; // TIM2_CCR1 -> duty cyc = TIM2_CCR1 / TIM2_ARR
+    TIM_OC3Init(TIM2, &TIM_OCInitStructure); // PWM OC3 -> TIM2 A2
+}
+
+void Usart_config(void) {
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE);
+    USART_InitStructure.USART_BaudRate = 115200;
+    USART_InitStructure.USART_WordLength = USART_WordLength_8b;
+    USART_InitStructure.USART_StopBits = USART_StopBits_1;
+    USART_InitStructure.USART_Parity = USART_Parity_No;
+    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+    USART_InitStructure.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
+    USART_Init(USART1, &USART_InitStructure);
+    // Enable data receive interrupt & USART1
+    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
+    USART_Cmd(USART1, ENABLE);
+}
+
+void I2C_Config(void) {
+    // Enable clocks for I2C2, PORTB and AFIO
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C2, ENABLE);
+    // I2C configuration
+    I2C_InitStructure.I2C_Mode = I2C_Mode_I2C;
+    I2C_InitStructure.I2C_DutyCycle = I2C_DutyCycle_2;
+    I2C_InitStructure.I2C_OwnAddress1 = 0x00;
+    I2C_InitStructure.I2C_Ack = I2C_Ack_Enable;
+    I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
+    I2C_InitStructure.I2C_ClockSpeed = 100000;
+    I2C_Init(I2C2, &I2C_InitStructure);
+    I2C_Cmd(I2C2, ENABLE);
+}
