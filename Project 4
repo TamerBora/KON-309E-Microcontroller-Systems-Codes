@@ -1,0 +1,246 @@
+#include "stm32f10x.h"
+#include "stm32f10x_rcc.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include <stdio.h>
+
+#define LED_PORT GPIOA
+#define RED_PIN  GPIO_Pin_0
+
+#define BUTTON_PORT GPIOA
+#define BUTTON_PIN1 GPIO_Pin_3
+
+#define Pot_Port GPIOA
+#define Pot_Pin GPIO_Pin_6
+
+int button_state = 0;
+double pot = 0; 
+int time_counter = 0; // timer 
+uint16_t data_receive=0;
+double pot_threshold = 0;
+double threshold_value = 0;
+int i=0;
+
+
+char temperature_data[20]; //to transmit data to computer
+uint16_t dataBuffer[2]; // data[0] => high bits , data[1] => low bits
+double temperature; // double form of temp.
+
+uint16_t LSB_dataBuffer; // Less significant bit's buffer
+
+
+GPIO_InitTypeDef GPIO_InitStruct;
+GPIO_InitTypeDef GPIO_InitStruct_Pot;
+EXTI_InitTypeDef EXTI_InitStruct;
+NVIC_InitTypeDef NVIC_InitStruct;
+ADC_InitTypeDef ADC_InitStruct;
+I2C_InitTypeDef I2C_InitStructure;
+USART_InitTypeDef USART_InitStructure;
+
+void SysTick_Handler (void) {   //To measure the time .
+		
+	time_counter++;
+	
+}
+
+
+
+void UART_Data(char *string) // To send data from UART to PC  
+{
+	while(*string)
+	{
+		while(!(USART1->SR & 0x00000040)); // 0x00000040 has transfer complaTed flag if this flag occurs all 8 bits sends.
+		USART_SendData(USART1,*string);
+		*string++;
+	}
+}
+
+
+void I2C_Config(void);
+void Usart_config(void);
+void GPIO_Config(void);
+void EXTI_Config(void);
+void ADC_Config(void);
+
+int main(void)
+{
+		GPIO_Config();
+		ADC_Config();
+	  I2C_Config();
+		Usart_config();
+		EXTI_Config();
+	
+		SysTick_Config(SystemCoreClock/100); //100hz 
+	
+	
+	while(1)
+	{
+		pot = ADC_GetConversionValue(ADC1);// pot value range = 0-4095
+		
+		pot_threshold = (pot/4095) * (50); // threshold changes between 0 - 50 degrees 
+		if (button_state == 1){
+			button_state = 0;								// flag reset
+			threshold_value = pot_threshold; // when button pressed threshold value set
+		} 
+	
+		while (I2C_GetFlagStatus(I2C2, I2C_FLAG_BUSY)); // Wait if busy
+		
+		I2C_GenerateSTART(I2C2, ENABLE);							 // Generate START condition
+		while (!I2C_GetFlagStatus(I2C2, I2C_FLAG_SB)); // Start bit
+		// Send device address for read
+		I2C_Send7bitAddress(I2C2, 0x90, I2C_Direction_Receiver); // Address of slave
+		while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED));
+		// Read the first data
+		while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_BYTE_RECEIVED));
+		dataBuffer[0] = I2C_ReceiveData(I2C2);
+		// Disable ACK and generate stop condition
+		I2C_AcknowledgeConfig(I2C2, DISABLE);
+		I2C_GenerateSTOP(I2C2, ENABLE); 
+		// Read the second data
+		while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_BYTE_RECEIVED));
+		dataBuffer[1] = I2C_ReceiveData(I2C2);
+		LSB_dataBuffer = dataBuffer[1];
+		LSB_dataBuffer = dataBuffer[1] >> 7; // To set resolution
+		temperature = dataBuffer[0] + 0.5*LSB_dataBuffer;
+		
+	
+			//Data Transmitter
+			
+			if(time_counter > 100){ // temperature is measured every 1 second
+			sprintf(temperature_data,"%f\r\n",(temperature)); //transfering the double to char
+			UART_Data(temperature_data); 
+			
+			time_counter=0;
+			}
+		
+			data_receive=USART_ReceiveData(USART1); // receive data via UART
+		
+			if(data_receive == '1' && temperature > threshold_value){
+				GPIO_SetBits(LED_PORT, RED_PIN);
+			}
+			else if(data_receive == '0' || temperature < threshold_value){
+				GPIO_ResetBits(LED_PORT, RED_PIN);
+			}
+	}
+}
+
+void GPIO_Config(void){
+	
+	RCC_APB2PeriphClockCmd( RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO, ENABLE);
+	
+	GPIO_InitStruct.GPIO_Pin = RED_PIN;
+  GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
+  GPIO_InitStruct.GPIO_Mode = GPIO_Mode_Out_PP;
+  GPIO_Init(LED_PORT, &GPIO_InitStruct);
+	
+	GPIO_InitStruct.GPIO_Pin = BUTTON_PIN1;
+  GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IPD; //input pull-down mode
+  GPIO_Init(BUTTON_PORT, &GPIO_InitStruct);
+	
+	GPIO_InitStruct_Pot.GPIO_Pin = Pot_Pin;
+	GPIO_InitStruct_Pot.GPIO_Mode = GPIO_Mode_AIN; // analog input mode
+	GPIO_Init(Pot_Port,&GPIO_InitStruct_Pot);
+	
+	GPIO_InitStruct.GPIO_Pin = GPIO_Pin_10;
+	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IN_FLOATING;  // RX
+	GPIO_Init(GPIOA, &GPIO_InitStruct);
+	
+	GPIO_InitStruct.GPIO_Pin = GPIO_Pin_9;
+	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;   // TX
+	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF_PP;
+	GPIO_Init(GPIOA, &GPIO_InitStruct);
+	
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
+	// Configure pins SDA and SCL
+	GPIO_InitStruct.GPIO_Pin = GPIO_Pin_10 | GPIO_Pin_11;
+	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF_OD;
+	GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+}
+void EXTI_Config(void){// setting for exti
+	
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE);//External clock	
+
+	GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource3); //button A3
+	EXTI_InitStruct.EXTI_Line = EXTI_Line3;
+	EXTI_InitStruct.EXTI_Mode =EXTI_Mode_Interrupt;
+	EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+	EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Rising;// // when pressing button, instantly rising is 1, when release falling edge is 1
+	
+	EXTI_Init(&EXTI_InitStruct);
+	
+	
+	NVIC_InitStruct.NVIC_IRQChannel = EXTI3_IRQn;
+	NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+	NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 0;
+	NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0 ;
+	
+	NVIC_Init(&NVIC_InitStruct);
+}
+void EXTI3_IRQHandler(void){
+	
+	if (EXTI_GetFlagStatus(EXTI_Line3) != RESET){
+		button_state = 1;
+		EXTI_ClearITPendingBit(EXTI_Line3); 
+	}
+	
+}
+void ADC_Config(void){
+	
+	RCC_ADCCLKConfig(RCC_PCLK2_Div6); 																				 // ADC clock 72/6 = 12 MHz
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1 | RCC_APB2Periph_AFIO, ENABLE); // Enable clocks for ADC1 and AFIO
+	ADC_DeInit(ADC1);
+	ADC_InitStruct.ADC_Mode = ADC_Mode_Independent;
+	ADC_InitStruct.ADC_ExternalTrigConv = ADC_ExternalTrigConv_None;
+	ADC_InitStruct.ADC_DataAlign = ADC_DataAlign_Right;
+	ADC_InitStruct.ADC_NbrOfChannel = 1;
+  ADC_InitStruct.ADC_ScanConvMode = DISABLE;  															 //Convert one channel at a time 
+  ADC_InitStruct.ADC_ContinuousConvMode = ENABLE;														 // Thanks to this, the brightness changes instantly.
+	
+	ADC_Init(ADC1, &ADC_InitStruct);
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_6, 1, ADC_SampleTime_41Cycles5);//channel_6 -> A6
+	ADC_Cmd(ADC1, ENABLE);																										 // enable ADC1
+
+	ADC_ResetCalibration(ADC1);																								 //calibration is set
+	while(ADC_GetResetCalibrationStatus(ADC1));
+	ADC_StartCalibration(ADC1);
+	while(ADC_GetCalibrationStatus(ADC1));
+	ADC_SoftwareStartConvCmd(ADC1, ENABLE); 																	 // the conversion start 
+}
+	void I2C_Config(void)
+{
+	// Enable clocks for I2C2, PORTB and AFIO
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C2, ENABLE);
+	
+	// I2C configuration
+	I2C_InitStructure.I2C_Mode = I2C_Mode_I2C;
+	I2C_InitStructure.I2C_DutyCycle = I2C_DutyCycle_2;
+	I2C_InitStructure.I2C_OwnAddress1 = 0x00;
+	I2C_InitStructure.I2C_Ack = I2C_Ack_Enable;
+	I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
+	I2C_InitStructure.I2C_ClockSpeed = 100000;
+	I2C_Init(I2C2, &I2C_InitStructure);
+	I2C_Cmd(I2C2, ENABLE);
+
+}
+
+void Usart_config(void){
+	
+	
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE);
+	
+	USART_InitStructure.USART_BaudRate = 19200;
+	USART_InitStructure.USART_WordLength = USART_WordLength_8b;
+	USART_InitStructure.USART_StopBits = USART_StopBits_1;
+	USART_InitStructure.USART_Parity = USART_Parity_No;
+	USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+	USART_InitStructure.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
+	USART_Init(USART1, &USART_InitStructure);
+	
+	// Enable data receive interrupt & USART1
+	USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
+	USART_Cmd(USART1,ENABLE);
+	
+	
+}
