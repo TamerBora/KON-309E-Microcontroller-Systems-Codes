@@ -1,0 +1,210 @@
+// Experiment-3 Part1
+#include "stm32f10x.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_rcc.h"
+
+#define LED_RCC_PORT RCC_APB2Periph_GPIOA
+#define LED_PORT GPIOA
+#define RED_PIN GPIO_Pin_0
+#define YELLOW_PIN GPIO_Pin_1
+#define GREEN_PIN GPIO_Pin_2
+
+#define BUTTON_RCC_PORT RCC_APB2Periph_GPIOA
+#define BUTTON_PORT GPIOA
+#define BUTTON_PIN1 GPIO_Pin_3
+#define BUTTON_PIN2 GPIO_Pin_4
+#define BUTTON_PIN3 GPIO_Pin_5
+
+GPIO_InitTypeDef GPIO_InitStruct;
+NVIC_InitTypeDef NVIC_InitStruct;
+TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
+TIM_OCInitTypeDef TIM_OCInitStructure;
+EXTI_InitTypeDef EXTI_InitStruct;
+
+int button_state1 = 0; // Checking if button 1 is pressed
+int state = 1; // To change state (1 -> off, 2 -> Red on, 3 -> Yellow on, 4 -> Green on)
+int brightness = 0; // Used to adjust for PWM pulse of brightness
+int brightness_coefficient = 1; // Adjusts the duty cycle for the brightness level (1 -> Low, 2 -> Medium, 3 -> High, 4 -> Full)
+
+void GPIO_Config(void) {
+    // Setting for GPIO
+    // Enable clock for LEDs and buttons
+    RCC_APB2PeriphClockCmd(LED_RCC_PORT | BUTTON_RCC_PORT, ENABLE);
+
+    // Parameters of the port structure for LEDs
+    GPIO_InitStruct.GPIO_Pin = RED_PIN | YELLOW_PIN | GREEN_PIN;
+    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF_PP; // Adjust alternative function output for PWM signal
+    GPIO_Init(LED_PORT, &GPIO_InitStruct);
+
+    // Parameters of the port structure for buttons
+    GPIO_InitStruct.GPIO_Pin = BUTTON_PIN1 | BUTTON_PIN2 | BUTTON_PIN3;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IPD; // Input pull down
+    GPIO_Init(BUTTON_PORT, &GPIO_InitStruct);
+}
+void EXTI_Config(void) {
+    // Setting for EXTI
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE); // External clock
+
+    // Config for A3 pin
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource3);
+    EXTI_InitStruct.EXTI_Line = EXTI_Line3;
+    EXTI_InitStruct.EXTI_Mode = EXTI_Mode_Interrupt;
+    EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+    EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Rising; // Activates when the button is pressed
+    EXTI_Init(&EXTI_InitStruct);
+
+    // Config for A4 pin
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource4);
+    EXTI_InitStruct.EXTI_Line = EXTI_Line4;
+    EXTI_InitStruct.EXTI_Mode = EXTI_Mode_Interrupt;
+    EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+    EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Rising; // Activates when the button is pressed
+    EXTI_Init(&EXTI_InitStruct);
+
+    // Config for A5 pin
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource5);
+    EXTI_InitStruct.EXTI_Line = EXTI_Line5;
+    EXTI_InitStruct.EXTI_Mode = EXTI_Mode_Interrupt;
+    EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+    EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Rising; // Activates when the button is pressed
+    EXTI_Init(&EXTI_InitStruct);
+
+    // Priority and configuration for EXTI3_IRQHandler
+    NVIC_InitStruct.NVIC_IRQChannel = EXTI3_IRQn;
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 0;
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+    NVIC_Init(&NVIC_InitStruct);
+
+    // Priority and configuration for EXTI4_IRQHandler
+    NVIC_InitStruct.NVIC_IRQChannel = EXTI4_IRQn;
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 1;
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+    NVIC_Init(&NVIC_InitStruct);
+
+    // Priority and configuration for EXTI9_5_IRQHandler
+    NVIC_InitStruct.NVIC_IRQChannel = EXTI9_5_IRQn;
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 2;
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+    NVIC_Init(&NVIC_InitStruct);
+}
+void EXTI3_IRQHandler(void) {
+    if (EXTI_GetFlagStatus(EXTI_Line3) != RESET) { // Enter when button1 is pressed
+        button_state1 = 1; // Button1 is on
+        brightness_coefficient = 1; // Start with the lowest duty cycle in each state
+        EXTI_ClearITPendingBit(EXTI_Line3); // Exit from interrupt
+    }
+}
+
+void EXTI4_IRQHandler(void) {
+    if (EXTI_GetFlagStatus(EXTI_Line4) != RESET) { // Enter when button2 is pressed
+        if (brightness_coefficient < 4) {
+            brightness_coefficient = brightness_coefficient + 1; // Brightness increasing
+        }
+        EXTI_ClearITPendingBit(EXTI_Line4); // Exit from interrupt
+    }
+}
+
+void EXTI9_5_IRQHandler(void) {
+    if (EXTI_GetFlagStatus(EXTI_Line5) != RESET) { // Enter when button3 is pressed
+        if (brightness_coefficient > 1) {
+            brightness_coefficient = brightness_coefficient - 1; // Brightness decreasing
+        }
+        EXTI_ClearITPendingBit(EXTI_Line5); // Exit from interrupt
+    }
+}
+
+void Time_Config(void) {
+    // Setting for timer interrupt
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+    TIM_TimeBaseStructure.TIM_Period = 7199; // TIM2_ARR = 7200
+    TIM_TimeBaseStructure.TIM_Prescaler = 0;
+    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1; // TIM_CKD_DIV1 = 0
+    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_TimeBaseStructure.TIM_RepetitionCounter = 0;
+    TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
+    TIM_Cmd(TIM2, ENABLE); // Enable timer 2
+}
+
+void pwm_red_config(uint16_t time_pulse) {
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1; // TIM2_CCMR1
+    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable; // TIM2_CCER
+    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High; // TIM2_CCER
+    TIM_OCInitStructure.TIM_Pulse = time_pulse; // TIM2_CCR1 -> duty cycle = TIM2_CCR1 / TIM2_ARR
+    TIM_OC1Init(TIM2, &TIM_OCInitStructure); // PWM OC1 -> TIM2 A0
+}
+void pwm_yellow_config(uint16_t time_pulse) {
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1; // TIM2_CCMR1
+    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable; // TIM2_CCER
+    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High; // TIM2_CCER
+    TIM_OCInitStructure.TIM_Pulse = time_pulse; // TIM2_CCR1 -> duty cycle = TIM2_CCR1 / TIM2_ARR
+    TIM_OC2Init(TIM2, &TIM_OCInitStructure); // PWM OC2 -> TIM2 A1
+}
+
+void pwm_green_config(uint16_t time_pulse) {
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1; // TIM2_CCMR1 -> mode pwm1 (the output signal is inverted if in mode pwm2)
+    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable; // TIM2_CCER
+    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High; // TIM2_CCER
+    TIM_OCInitStructure.TIM_Pulse = time_pulse; // TIM2_CCR1 -> duty cycle = TIM2_CCR1 / TIM2_ARR
+    TIM_OC3Init(TIM2, &TIM_OCInitStructure); // PWM OC3 -> TIM2 A3
+}
+
+int main(void) {
+    GPIO_Config();
+    Time_Config();
+    EXTI_Config();
+
+    while (1) {
+        switch (state) {
+            case 1: // Off state
+                pwm_red_config(0); // Red off
+                pwm_yellow_config(0); // Yellow off
+                pwm_green_config(0); // Green off
+
+                if (button_state1 == 1) { // When button1 is pressed, the state changes (1->2)
+                    button_state1 = 0;
+                    state = 2;
+                }
+                break;
+
+            case 2:
+                brightness = ((72 * (brightness_coefficient * 25)) - 1); // Time pulse = ((7200 * duty cyc) / 100) - 1
+                pwm_red_config(brightness); // Red on
+                pwm_yellow_config(0); // Yellow off
+                pwm_green_config(0); // Green off
+
+                if (button_state1 == 1) { // When button1 is pressed, the state changes (2->3)
+                    button_state1 = 0;
+                    state = 3;
+                }
+                break;
+
+            case 3:
+                brightness = ((72 * (brightness_coefficient * 25)) - 1); // Time pulse = ((7200 * duty cyc) / 100) - 1
+                pwm_red_config(0); // Red off
+                pwm_yellow_config(brightness); // Yellow on
+                pwm_green_config(0); // Green off
+
+                if (button_state1 == 1) { // When button1 is pressed, the state changes (3->4)
+                    button_state1 = 0;
+                    state = 4;
+                }
+                break;
+
+            case 4:
+                brightness = ((72 * (brightness_coefficient * 25)) - 1); // Time pulse = ((7200 * duty cyc) / 100) - 1
+                pwm_red_config(0); // Red off
+                pwm_yellow_config(0); // Yellow off
+                pwm_green_config(brightness); // Green on
+
+                if (button_state1 == 1) { // When button1 is pressed, the state changes (4->1)
+                    button_state1 = 0;
+                    state = 1;
+                }
+                break;
+        }
+    }
+}
