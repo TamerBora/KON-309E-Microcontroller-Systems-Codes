@@ -1,0 +1,315 @@
+#include "stm32f10x.h"
+#include "stm32f10x_rcc.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include <stdio.h>
+
+#define Vin_PORT GPIOA
+#define Vin_PIN GPIO_Pin_0
+#define BUTTON_PORT GPIOA
+#define BUTTON_PIN1 GPIO_Pin_3
+#define Vout_Port GPIOA
+#define Vout_PIN GPIO_Pin_6
+
+GPIO_InitTypeDef GPIO_InitStruct;
+GPIO_InitTypeDef GPIO_InitStruct_Pot;
+EXTI_InitTypeDef EXTI_InitStruct;
+NVIC_InitTypeDef NVIC_InitStruct;
+TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
+TIM_OCInitTypeDef TIM_OCInitStructure; // Output pin control for PWM
+ADC_InitTypeDef ADC_InitStruct; // For ADC configuration
+USART_InitTypeDef USART_InitStructure;
+
+int button_state = 0; // 0-> off, 1-> on
+int time_counter = 0;
+int time_100ms_counter = 0;
+double Vout_value = 0;
+char data_buffer[20];
+int reference_value = 0;
+int on_off_flag = 0;
+int i = 0;
+double uk;
+double Gz_Value = 0;
+double P_Gz_Value = 0;
+double PI_Value = 0;
+double PI_Gz_Value = 0;
+double Rs = 0;
+double PI_out = 0;
+double P_out = 0;
+double y = 0.00;
+
+void GPIO_Config(void);
+void Time_Config(void);
+void EXTI_Config(void);
+void ADC_Config(void);
+void Usart_config(void);
+void pwm_value(uint16_t pwm_val);
+void UART_Data(char* string);
+double Gz(double uk);
+double PI(double r, double y);
+double P(double rP, double yP);
+void P_Control_Hardware(void);
+void P_Control_Actual(void);
+void PI_Control_Hardware(void);
+void PI_Control_Actual(void);
+void V_Out_noncontrol(void);
+void Gz_noncontrol(void);
+int main() {
+    EXTI_Config();
+    Time_Config();
+    GPIO_Config();
+    ADC_Config();
+    Usart_config();
+    SysTick_Config(SystemCoreClock / 100); // 10 ms (100Hz)
+    Rs = 0;
+    
+    while (1) {
+        if (time_100ms_counter == 1) {
+            time_100ms_counter = 0;
+            Vout_value = 3.3 * ADC_GetConversionValue(ADC1) / 4095;
+            // V_Out_noncontrol();
+            // P_Control_Actual();
+            // PI_Control_Actual();
+            // Gz_noncontrol();
+            // P_Control_Hardware();
+            // PI_Control_Hardware();
+        }
+        
+        pwm_value(reference_value);
+        sprintf(data_buffer, "%f\r\n", y); // transferring the double to char
+        UART_Data(data_buffer);
+        
+        if (button_state == 1 && on_off_flag == 0) {
+            for (i = 0; i < 100000; i++) {};
+            button_state = 0;
+            on_off_flag = 1;
+            Rs = 1;
+        }
+        
+        if (button_state == 1 && on_off_flag == 1) {
+            for (i = 0; i < 100000; i++) {};
+            on_off_flag = 0;
+            button_state = 0;
+            Rs = 0;
+        }
+    }
+}
+
+void Gz_noncontrol(void) {
+    Gz_Value = Gz(Rs);
+    y = Gz_Value;
+}
+
+void V_Out_noncontrol(void) {
+    if (Rs == 1) {
+        reference_value = 1000;
+    }
+    
+    if (Rs == 0) {
+        reference_value = 0;
+    }
+    
+    y = Vout_value;
+}
+
+void P_Control_Hardware(void) {
+    P_out = P(Rs, P_Gz_Value); // Hardware
+    P_Gz_Value = Gz(P_out); // Hardware
+    reference_value = 1000 * P_Gz_Value;
+    y = P_Gz_Value;
+}
+
+void P_Control_Actual(void) {
+    P_out = P(Rs, Vout_value); // Actual
+    reference_value = 1000 * P_out;
+    
+    if (reference_value < 0) {
+        reference_value = 0;
+    }
+    
+    pwm_value(reference_value);
+    Vout_value = 3.3 * ADC_GetConversionValue(ADC1) / 4095;
+    P_Gz_Value = Vout_value; // Actual
+    y = P_Gz_Value;
+}
+
+void PI_Control_Hardware(void) {
+    PI_out = PI(Rs, PI_Gz_Value); // Hardware
+    PI_Gz_Value = Gz(PI_out); // Hardware
+    reference_value = 1000 * PI_Gz_Value;
+    y = PI_Gz_Value;
+}
+
+void PI_Control_Actual(void) {
+    PI_out = PI(Rs, Vout_value); // Actual
+    reference_value = 1000 * PI_out;
+    
+    if (reference_value < 0) {
+        reference_value = 0;
+    }
+    
+    pwm_value(reference_value);
+    Vout_value = 3.3 * ADC_GetConversionValue(ADC1) / 4095;
+    PI_Gz_Value = Vout_value; // Actual
+    y = PI_Gz_Value;
+}
+double Gz(double uk_gz) {
+    static double yk_1 = 0, yk_2 = 0, uk_1 = 0, uk_2 = 0;
+    double yk = 1.822 * yk_1 - 0.8262 * yk_2 + 0.002134 * uk_1 + 0.002002 * uk_2;
+    uk_2 = uk_1;
+    uk_1 = uk_gz;
+    yk_2 = yk_1;
+    yk_1 = yk;
+    return yk;
+}
+
+double P(double rP, double yP) {
+    static double uk_1P = 0, ek_1P = 0;
+    double ekP = rP - yP;
+    double ukP = uk_1P + 2.5 * ekP - 2.5 * ek_1P;
+    uk_1P = ukP;
+    ek_1P = ekP;
+    return ukP;
+}
+
+double PI(double rPI, double yPI) {
+    static double uk_1PI = 0, ek_1PI = 0;
+    double ekPI = rPI - yPI;
+    double ukPI = uk_1PI + 2.8 * ekPI - 2.72 * ek_1PI;
+    uk_1PI = ukPI;
+    ek_1PI = ekPI;
+    return ukPI;
+}
+
+void UART_Data(char* string) { //To send data from UART to PC
+    while (*string) {
+        while (!(USART1->SR & 0x00000040)); // 0x00000040 has transfer completed flag
+        USART_SendData(USART1, *string);
+        string++;
+    }
+}
+
+void pwm_value(uint16_t pwm_val) {
+    TIM_OCInitStructure.TIM_Pulse = pwm_val;
+    TIM_OC1Init(TIM2, &TIM_OCInitStructure);
+}
+
+void EXTI3_IRQHandler(void) {
+    if (EXTI_GetFlagStatus(EXTI_Line3) != RESET) {
+        button_state = 1;
+        EXTI_ClearITPendingBit(EXTI_Line3);
+    }
+}
+
+void SysTick_Handler(void) { // Every 10 ms, systick counter increases
+    time_counter = time_counter + 1;
+    if (time_counter == 10) {
+        time_counter = 0;
+        time_100ms_counter = time_100ms_counter + 1;
+    }
+}
+void GPIO_Config(void) { // Setting for GPIO
+    // Enable clock
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO, ENABLE);
+    
+    // Parameters of the port structure
+    GPIO_InitStruct.GPIO_Pin = Vin_PIN;
+    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF_PP; // Alternative function push pull for Vin
+    GPIO_Init(Vin_PORT, &GPIO_InitStruct);
+    
+    GPIO_InitStruct.GPIO_Pin = BUTTON_PIN1;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IPD; // Input pull-down mode
+    GPIO_Init(BUTTON_PORT, &GPIO_InitStruct);
+    
+    GPIO_InitStruct_Pot.GPIO_Pin = Vout_PIN;
+    GPIO_InitStruct_Pot.GPIO_Mode = GPIO_Mode_AIN; // Analog input mode
+    GPIO_Init(Vout_Port, &GPIO_InitStruct_Pot);
+    
+    GPIO_InitStruct.GPIO_Pin = GPIO_Pin_10;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IN_FLOATING; // RX
+    GPIO_Init(GPIOA, &GPIO_InitStruct);
+    
+    GPIO_InitStruct.GPIO_Pin = GPIO_Pin_9;
+    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz; // TX
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF_PP;
+    GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+
+void Time_Config(void) {
+    // Setting for timer interrupt
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+    
+    TIM_TimeBaseStructure.TIM_Period = 3299; // TIM2_ARR -> 3300
+    TIM_TimeBaseStructure.TIM_Prescaler = 9;
+    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1; // TIM_CKD_DIV1 = 0
+    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_TimeBaseStructure.TIM_RepetitionCounter = 0;
+    TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE);
+    TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
+    
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1; // TIM2_CCMR1
+    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable; // TIM2_CCER
+    TIM_OC1Init(TIM2, &TIM_OCInitStructure);
+    
+    TIM_Cmd(TIM2, ENABLE);
+}
+
+void EXTI_Config(void) { // Setting for EXTI
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE); // External clock
+    
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource3); // Button A3
+    
+    EXTI_InitStruct.EXTI_Line = EXTI_Line3;
+    EXTI_InitStruct.EXTI_Mode = EXTI_Mode_Interrupt;
+    EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+    EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Rising;
+    EXTI_Init(&EXTI_InitStruct);
+    
+    NVIC_InitStruct.NVIC_IRQChannel = EXTI3_IRQn;
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 0;
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+    NVIC_Init(&NVIC_InitStruct);
+}
+
+void ADC_Config(void) {
+    RCC_ADCCLKConfig(RCC_PCLK2_Div6); // ADC clock 72/6 = 12 MHz
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1 | RCC_APB2Periph_AFIO, ENABLE); // Enable clocks for ADC1 and AFIO
+    
+    ADC_DeInit(ADC1);
+    ADC_InitStruct.ADC_Mode = ADC_Mode_Independent;
+    ADC_InitStruct.ADC_ExternalTrigConv = ADC_ExternalTrigConv_None;
+    ADC_InitStruct.ADC_DataAlign = ADC_DataAlign_Right;
+    ADC_InitStruct.ADC_NbrOfChannel = 1;
+    ADC_InitStruct.ADC_ScanConvMode = DISABLE; // Convert one channel at a time, if this could be ENABLE this mode reads all ADC channel
+    ADC_InitStruct.ADC_ContinuousConvMode = ENABLE; // Thanks to this, change instantly.
+    ADC_Init(ADC1, &ADC_InitStruct);
+    
+    ADC_RegularChannelConfig(ADC1, ADC_Channel_6, 1, ADC_SampleTime_41Cycles5); // Channel_6 -> A6
+    
+    ADC_Cmd(ADC1, ENABLE); // Enable ADC1
+    ADC_ResetCalibration(ADC1); // Calibration is set
+    
+    while (ADC_GetResetCalibrationStatus(ADC1));
+    ADC_StartCalibration(ADC1);
+    
+    while (ADC_GetCalibrationStatus(ADC1));
+    ADC_SoftwareStartConvCmd(ADC1, ENABLE); // The conversion starts
+}
+
+void Usart_config(void) {
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE);
+    
+    USART_InitStructure.USART_BaudRate = 19200;
+    USART_InitStructure.USART_WordLength = USART_WordLength_8b;
+    USART_InitStructure.USART_StopBits = USART_StopBits_1;
+    USART_InitStructure.USART_Parity = USART_Parity_No;
+    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+    USART_InitStructure.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
+    USART_Init(USART1, &USART_InitStructure);
+    
+    // Enable data receive interrupt & USART1
+    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
+    USART_Cmd(USART1, ENABLE);
+}
